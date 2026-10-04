@@ -16,8 +16,7 @@ def status(msg):
     print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
 
 mne.set_log_level("WARNING")
-subject_list = ["103", "104", "105", "106", "107", "108", "109", "110", "111", "112", "113", "114", "115", "116", "117", "118", "119", "120"]
-
+subject_list = ["103"]
 for sub in subject_list:
     try:
         CONFIG = {
@@ -107,18 +106,12 @@ for sub in subject_list:
 
         MAX_BADS = 4
 
-        DROP_CHANNELS = ["F11", "F12", "FT11", "FT12"]  #  "FP1", "FP2"
-        raw.drop_channels(DROP_CHANNELS)
-        status(f"Dropped channels {DROP_CHANNELS}.")
-        report.add_html(
-            f"<p>Dropped channels: {DROP_CHANNELS}</p>"
-            f"<p>Remaining EEG channels: {len(mne.pick_types(raw.info, eeg=True))}</p>",
-            title="Dropped bad channels",
-        )
+        # Kept out of bad-channel detection, used for ICA, dropped after ICA
+        DROP_CHANNELS = ["FP1", "FP2", "F11", "F12", "FT11", "FT12"]
 
         status("Running automated bad-channel detection (pyprep RANSAC) — this is usually the slowest step, can take a few minutes...")
         raw.set_eeg_reference(ref_channels="average", projection=False)
-        nc = NoisyChannels(raw.copy(), random_state=35)
+        nc = NoisyChannels(raw.copy().drop_channels(DROP_CHANNELS), random_state=35)
         nc.find_all_bads(ransac=True)
         bads = nc.get_bads(verbose=True)
 
@@ -220,6 +213,10 @@ for sub in subject_list:
         status("Applying ICA — removing flagged ocular components from raw...")
         ica.apply(raw, exclude=eog_iclabel_indices)
         print(f"Applied ICA. Removed components: {eog_iclabel_indices}")
+
+        raw.drop_channels(DROP_CHANNELS)
+        raw.set_eeg_reference(ref_channels="average", projection=False)
+        status(f"Dropped channels {DROP_CHANNELS}.")
 
         var_removed = (
             ica.get_explained_variance_ratio(raw_ica_fit, components=eog_iclabel_indices, ch_type="eeg")["eeg"]
