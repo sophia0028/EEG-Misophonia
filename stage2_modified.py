@@ -1,5 +1,3 @@
-# os.environ["LOKY_MAX_CPU_COUNT"] = "4"
-
 import json
 from pathlib import Path
 import numpy as np
@@ -15,8 +13,13 @@ from pyprep import NoisyChannels
 def status(msg):
     print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
 
-mne.set_log_level("WARNING")
-subject_list = ["103"]
+sub_errors = []
+
+subject_list = ['113', '121', '122', '126', '129', '130', '131', 
+                '133', '134', '139', '145', '147', '148', '152', 
+                '153', '155', '156', '157', '158', '159', '162', 
+                '174', '178', '179', '196', '202', '213']
+
 for sub in subject_list:
     try:
         CONFIG = {
@@ -93,25 +96,34 @@ for sub in subject_list:
         )
 
 
+        MAX_BADS = 4
+
+        # Dropped right after cropping (never used)
+        EARLY_DROP_CHANNELS = ["F11", "F12", "FT11", "FT12"]
+        # Kept through bad-channel detection and ICA (blink signature), never interpolated, dropped after ICA
+        FRONTAL_POLE_CHANNELS = ["Fp1", "Fp2"]
+
         dur_before_crop = raw.times[-1]
         raw.crop(tmin=tmin, tmax=tmax)
-        status("Trimmed 10 seconds from beginning and end of triggers.")
+        early_upper = [ch.upper() for ch in EARLY_DROP_CHANNELS]
+        early_present = [ch for ch in raw.ch_names if ch.upper() in early_upper]
+        raw.drop_channels(early_present)
+        status(f"Trimmed 10 seconds from beginning and end of triggers. Dropped channels {early_present}.")
 
         report.add_html(
             f"<p>Kept {tmin:.1f}&ndash;{tmax:.1f} s (first trigger &minus; 10 s to last trigger + 10 s).</p>"
-            f"<p>Duration: {dur_before_crop:.1f} s &rarr; {raw.times[-1]:.1f} s</p>",
+            f"<p>Duration: {dur_before_crop:.1f} s &rarr; {raw.times[-1]:.1f} s</p>"
+            f"<p>Dropped channels: {early_present}</p>",
             title="Automatically crop bad segments",
         )
 
 
-        MAX_BADS = 4
+        status("Average re-reference #1 (before bad-channel detection)...")
+        raw.set_eeg_reference(ref_channels="average", projection=False)
 
-        # Kept out of bad-channel detection, used for ICA, dropped after ICA
-        DROP_CHANNELS = ["FP1", "FP2", "F11", "F12", "FT11", "FT12"]
 
         status("Running automated bad-channel detection (pyprep RANSAC) — this is usually the slowest step, can take a few minutes...")
-        raw.set_eeg_reference(ref_channels="average", projection=False)
-        nc = NoisyChannels(raw.copy().drop_channels(DROP_CHANNELS), random_state=35)
+        nc = NoisyChannels(raw.copy(), random_state=35)
         nc.find_all_bads(ransac=True)
         bads = nc.get_bads(verbose=True)
 
@@ -128,35 +140,63 @@ for sub in subject_list:
             "manual": nc.bad_by_manual,
         }
 
-        print(f"Bad channels detected (single pass, post-reference): {bads}")
+        print(f"Bad channels detected (post-reference #1): {bads}")
         for name, chs in criteria.items():
             if chs:
                 print(f"  by {name}: {chs}")
         status("Bad-channel detection complete.")
 
+        # FP1/FP2 are never interpolated (kept as-is for ICA, dropped afterwards)
+        frontal_upper = [ch.upper() for ch in FRONTAL_POLE_CHANNELS]
+        fp_bads = [ch for ch in bads if ch.upper() in frontal_upper]
+        interp_bads = [ch for ch in bads if ch.upper() not in frontal_upper]
+        if fp_bads:
+            print(f"Frontal pole channels flagged but not interpolated: {fp_bads}")
 
-        if len(bads) <= MAX_BADS:
-            raw.info["bads"] = bads
-            if bads:
-                raw.interpolate_bads(reset_bads=True)
-                raw.set_eeg_reference(ref_channels="average", projection=False)
-            print(f"Done. Interpolated: {bads}")
+        flagged = len(interp_bads) > MAX_BADS
+
+        # Too many bads: interpolate only the MAX_BADS least-bad channels (fewest pyprep criteria
+        # flagging them, ties broken by smallest robust deviation z-score). The rest stay marked
+        # in raw.info["bads"], so they are excluded from re-referencing and ICA and saved as bads.
+        not_interp_bads = []
+        if flagged:
+            deviations = dict(zip(
+                nc.ch_names_new,
+                np.abs(nc._extra_info["bad_by_deviation"]["robust_channel_deviations"]),
+            ))
+            def badness(ch):
+                n_criteria = sum(ch in chs for chs in criteria.values())
+                return (n_criteria, deviations.get(ch, np.inf))
+            ranked = sorted(interp_bads, key=badness)
+            interp_bads, not_interp_bads = ranked[:MAX_BADS], ranked[MAX_BADS:]
+            print(
+                f"FLAGGED: {len(ranked)} bad channels exceeds MAX_BADS={MAX_BADS}. "
+                f"Interpolating {interp_bads}; leaving marked bad (not interpolated): {not_interp_bads}"
+            )
 
         report.add_html(
             f"<p>Detected: {bads}</p><pre>{json.dumps(criteria, indent=2)}</pre>"
-            f"<p>Flagged for manual review: {len(bads) > MAX_BADS}</p>",
+            f"<p>To interpolate: {interp_bads or 'none'}</p>"
+            f"<p>Exceeded MAX_BADS={MAX_BADS}, left marked bad (not interpolated): {not_interp_bads or 'none'}</p>"
+            f"<p>Flagged FP1/FP2 (not interpolated): {fp_bads or 'none'}</p>"
+            f"<p>Flagged for manual review: {flagged}</p>",
             title="Bad channel detection (pyprep)",
         )
 
-        if len(bads) > MAX_BADS:
-            report_html_path = out_dir / f"{sub}_stage2_report.html"
-            report.save(report_html_path, overwrite=True, open_browser=False)
-            print(f"Saved (partial, flagged): {report_html_path}")
-            raise RuntimeError(
-                f"FLAGGED: {len(bads)} bad channels ({bads}) exceeds MAX_BADS={MAX_BADS} "
-                "— stopping for manual review. Re-run Cell 7 to inspect/mark manually, "
-                "or raise MAX_BADS if this subject is expected to be noisier."
-            )
+        if interp_bads:
+            raw.info["bads"] = interp_bads
+            raw.interpolate_bads(reset_bads=True)
+        raw.info["bads"] = not_interp_bads
+        print(f"Done. Interpolated: {interp_bads}")
+
+
+        # Re-reference #2: always run, so the reference reflects interpolated channels
+        status("Average re-reference #2 (after interpolation)...")
+        raw.set_eeg_reference(ref_channels="average", projection=False)
+        report.add_html(
+            f"<p>Average reference re-applied after interpolating {interp_bads or 'no channels'}.</p>",
+            title="Average re-reference #2",
+        )
 
 
         status("Fitting ICA (infomax, 20 components)...")
@@ -214,9 +254,10 @@ for sub in subject_list:
         ica.apply(raw, exclude=eog_iclabel_indices)
         print(f"Applied ICA. Removed components: {eog_iclabel_indices}")
 
-        raw.drop_channels(DROP_CHANNELS)
-        raw.set_eeg_reference(ref_channels="average", projection=False)
-        status(f"Dropped channels {DROP_CHANNELS}.")
+        # Match names case-insensitively (e.g. Fp1 vs FP1) since drop_channels is case-sensitive
+        fp_present = [ch for ch in raw.ch_names if ch.upper() in frontal_upper]
+        raw.drop_channels(fp_present)
+        status(f"Dropped channels {fp_present}.")
 
         var_removed = (
             ica.get_explained_variance_ratio(raw_ica_fit, components=eog_iclabel_indices, ch_type="eeg")["eeg"]
@@ -239,7 +280,9 @@ for sub in subject_list:
             "bads_detected": bads,
             "bads_criteria": criteria,
             "n_bads": len(bads),
-            "flagged_for_review": len(bads) > MAX_BADS,
+            "bads_interpolated": interp_bads,
+            "frontal_pole_bads_not_interpolated": fp_bads,
+            "flagged_for_review": flagged,
             "highpass_hz": raw.info["highpass"],
             "lowpass_hz": raw.info["lowpass"],
             "ica_eog_components_removed": list(map(int, eog_iclabel_indices)),
@@ -258,8 +301,7 @@ for sub in subject_list:
 
     except Exception as e:
                 print(f"Error occurred for {sub}: {e}")
+                sub_errors.append(sub)
                 continue
 
-
-
-
+print(f"\nSubjects returning errors: {sub_errors}.")
