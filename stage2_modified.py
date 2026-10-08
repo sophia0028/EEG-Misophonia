@@ -3,6 +3,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
+matplotlib.use('Agg')  # use non-interactive backend
+import matplotlib.pyplot as plt
 import time
 
 import mne
@@ -15,10 +17,9 @@ def status(msg):
 
 sub_errors = []
 
-subject_list = ['113', '121', '122', '126', '129', '130', '131', 
-                '133', '134', '139', '145', '147', '148', '152', 
-                '153', '155', '156', '157', '158', '159', '162', 
-                '174', '178', '179', '196', '202', '213']
+subject_list = ['196', '202']
+
+# 139 ses, 154 stage 1 
 
 for sub in subject_list:
     try:
@@ -27,7 +28,7 @@ for sub in subject_list:
             "subject": sub
         }
         sub = CONFIG["subject"]
-        status(f"Loading stage-1 checkpoint for subject {sub}...")
+        # status(f"Loading stage-1 checkpoint for subject {sub}...")
         out_dir = CONFIG["results_dir"] / sub
 
         raw = mne.io.read_raw_fif(out_dir / f"{sub}_stage1_resampled_raw.fif", preload=True)
@@ -44,17 +45,17 @@ for sub in subject_list:
 
         montage = raw.get_montage()
 
-        print(f"Loaded: {raw.info['sfreq']} Hz, {len(raw.ch_names)} channels, {len(events)} events")
-        print("event_id:", event_id)
-        print(f"Montage: {len(montage.ch_names) if montage else 0} positions")
+        # print(f"Loaded: {raw.info['sfreq']} Hz, {len(raw.ch_names)} channels, {len(events)} events")
+        # print("event_id:", event_id)
+        # print(f"Montage: {len(montage.ch_names) if montage else 0} positions")
 
-        print(f"\nTotal events: {len(events)}")
+        # print(f"\nTotal events: {len(events)}")
         for label, code in event_id.items():
             count = np.sum(events[:, 2] == code)
-            print(f"  {label}: {count}")
+            # print(f"  {label}: {count}")
 
 
-        status("Computing PSD before filtering (this can take a moment)...")
+        # status("Computing PSD before filtering (this can take a moment)...")
         report = mne.Report(title=f"Stage 2 Preprocessing — Subject {sub}")
         report.add_raw(raw, title="Stage 1 checkpoint (as loaded)", psd=False)
 
@@ -65,19 +66,19 @@ for sub in subject_list:
         fig_psd_prefilter = psd_prefilter.plot(picks="eeg", exclude=[], dB=True)
         report.add_figure(fig_psd_prefilter, title="PSD before filtering")
 
-        status("Applying high-pass -> notch -> low-pass filters...")
+        # status("Applying high-pass -> notch -> low-pass filters...")
         raw.filter(l_freq=0.1, h_freq=None, picks="eeg", fir_design="firwin", phase="zero")
         raw.notch_filter(freqs=50, picks="eeg", notch_widths=1, fir_design="firwin")
         raw.filter(l_freq=None, h_freq=40, picks="eeg", fir_design="firwin", phase="zero")
 
-        print(f"Filtered: {raw.info['highpass']}-{raw.info['lowpass']} Hz (notch at 50 Hz)")
+        # print(f"Filtered: {raw.info['highpass']}-{raw.info['lowpass']} Hz (notch at 50 Hz)")
 
         report.add_html(
             f"<p>High-pass 0.1 Hz &rarr; notch 50 Hz (width 1 Hz) &rarr; low-pass 40 Hz</p>",
             title="Filtering applied",
         )
 
-        status("Computing PSD after filtering...")
+        # status("Computing PSD after filtering...")
         psd = raw.compute_psd(
             method="welch", fmin=0.05, fmax=60, picks="eeg",
             n_fft=2048, n_overlap=1024, average="median",
@@ -86,9 +87,9 @@ for sub in subject_list:
         report.add_figure(fig_psd, title="PSD after filtering")
 
         stage1_bads = list(raw.info["bads"])
-        print("Bads carried from stage 1:", stage1_bads)
+        # print("Bads carried from stage 1:", stage1_bads)
         raw.info["bads"] = []
-        print("Reset. Current bads:", raw.info["bads"])
+        # print("Reset. Current bads:", raw.info["bads"])
 
         report.add_html(
             f"<p>Bads carried from stage 1: {stage1_bads or 'none'} &rarr; reset to empty list.</p>",
@@ -108,7 +109,7 @@ for sub in subject_list:
         early_upper = [ch.upper() for ch in EARLY_DROP_CHANNELS]
         early_present = [ch for ch in raw.ch_names if ch.upper() in early_upper]
         raw.drop_channels(early_present)
-        status(f"Trimmed 10 seconds from beginning and end of triggers. Dropped channels {early_present}.")
+        # status(f"Trimmed 10 seconds from beginning and end of triggers. Dropped channels {early_present}.")
 
         report.add_html(
             f"<p>Kept {tmin:.1f}&ndash;{tmax:.1f} s (first trigger &minus; 10 s to last trigger + 10 s).</p>"
@@ -118,11 +119,11 @@ for sub in subject_list:
         )
 
 
-        status("Average re-reference #1 (before bad-channel detection)...")
+        # status("Average re-reference #1 (before bad-channel detection)...")
         raw.set_eeg_reference(ref_channels="average", projection=False)
 
 
-        status("Running automated bad-channel detection (pyprep RANSAC) — this is usually the slowest step, can take a few minutes...")
+        # status("Running automated bad-channel detection (pyprep RANSAC) — this is usually the slowest step, can take a few minutes...")
         nc = NoisyChannels(raw.copy(), random_state=35)
         nc.find_all_bads(ransac=True)
         bads = nc.get_bads(verbose=True)
@@ -140,18 +141,19 @@ for sub in subject_list:
             "manual": nc.bad_by_manual,
         }
 
-        print(f"Bad channels detected (post-reference #1): {bads}")
-        for name, chs in criteria.items():
-            if chs:
-                print(f"  by {name}: {chs}")
-        status("Bad-channel detection complete.")
+        # print(f"Bad channels detected (post-reference #1): {bads}")
+        # for name, chs in criteria.items():
+        #     if chs:
+        #         print(f"  by {name}: {chs}")
+        # status("Bad-channel detection complete.")
 
         # FP1/FP2 are never interpolated (kept as-is for ICA, dropped afterwards)
         frontal_upper = [ch.upper() for ch in FRONTAL_POLE_CHANNELS]
         fp_bads = [ch for ch in bads if ch.upper() in frontal_upper]
         interp_bads = [ch for ch in bads if ch.upper() not in frontal_upper]
         if fp_bads:
-            print(f"Frontal pole channels flagged but not interpolated: {fp_bads}")
+            # print(f"Frontal pole channels flagged but not interpolated: {fp_bads}")
+            pass
 
         flagged = len(interp_bads) > MAX_BADS
 
@@ -169,10 +171,10 @@ for sub in subject_list:
                 return (n_criteria, deviations.get(ch, np.inf))
             ranked = sorted(interp_bads, key=badness)
             interp_bads, not_interp_bads = ranked[:MAX_BADS], ranked[MAX_BADS:]
-            print(
-                f"FLAGGED: {len(ranked)} bad channels exceeds MAX_BADS={MAX_BADS}. "
-                f"Interpolating {interp_bads}; leaving marked bad (not interpolated): {not_interp_bads}"
-            )
+            # print(
+            #     f"FLAGGED: {len(ranked)} bad channels exceeds MAX_BADS={MAX_BADS}. "
+            #     f"Interpolating {interp_bads}; leaving marked bad (not interpolated): {not_interp_bads}"
+            # )
 
         report.add_html(
             f"<p>Detected: {bads}</p><pre>{json.dumps(criteria, indent=2)}</pre>"
@@ -187,11 +189,11 @@ for sub in subject_list:
             raw.info["bads"] = interp_bads
             raw.interpolate_bads(reset_bads=True)
         raw.info["bads"] = not_interp_bads
-        print(f"Done. Interpolated: {interp_bads}")
+        # print(f"Done. Interpolated: {interp_bads}")
 
 
         # Re-reference #2: always run, so the reference reflects interpolated channels
-        status("Average re-reference #2 (after interpolation)...")
+        # status("Average re-reference #2 (after interpolation)...")
         raw.set_eeg_reference(ref_channels="average", projection=False)
         report.add_html(
             f"<p>Average reference re-applied after interpolating {interp_bads or 'no channels'}.</p>",
@@ -199,7 +201,8 @@ for sub in subject_list:
         )
 
 
-        status("Fitting ICA (infomax, 20 components)...")
+
+        # status("Fitting ICA (infomax, 20 components)...")
         raw_ica_fit = raw.copy().filter(l_freq=1.0, h_freq=None, picks="eeg", fir_design="firwin")
         ica = ICA(n_components=20, method="infomax", fit_params=dict(extended=True),
                 random_state=35, max_iter=800)
@@ -207,24 +210,24 @@ for sub in subject_list:
         print(f"ICA fit complete: {ica.n_components_} components")
 
 
-        status("Rendering ICA component topographies...")
+        # status("Rendering ICA component topographies...")
         ica.plot_components()
 
 
-        status("Running ICLabel classification...")
+        # status("Running ICLabel classification...")
         matplotlib.use("Agg")
 
         raw_iclabel = raw.copy().filter(l_freq=1.0, h_freq=40.0, picks="eeg", fir_design="firwin")
         ic_labels = label_components(raw_iclabel, ica, method="iclabel")
 
-        print("Labels:", ic_labels["labels"])
-        print("Probabilities:", ic_labels["y_pred_proba"])
+        # print("Labels:", ic_labels["labels"])
+        # print("Probabilities:", ic_labels["y_pred_proba"])
 
         eog_iclabel_indices = [
             i for i, (label, prob) in enumerate(zip(ic_labels["labels"], ic_labels["y_pred_proba"]))
             if label == "eye blink" and prob > 0.8
         ]
-        print(f"ICLabel-flagged eye components (prob > 0.8): {eog_iclabel_indices}")
+        # print(f"ICLabel-flagged eye components (prob > 0.8): {eog_iclabel_indices}")
 
 
         ica.exclude = list(eog_iclabel_indices)
@@ -250,14 +253,14 @@ for sub in subject_list:
         )
 
 
-        status("Applying ICA — removing flagged ocular components from raw...")
+        # status("Applying ICA — removing flagged ocular components from raw...")
         ica.apply(raw, exclude=eog_iclabel_indices)
-        print(f"Applied ICA. Removed components: {eog_iclabel_indices}")
+        # print(f"Applied ICA. Removed components: {eog_iclabel_indices}")
 
         # Match names case-insensitively (e.g. Fp1 vs FP1) since drop_channels is case-sensitive
         fp_present = [ch for ch in raw.ch_names if ch.upper() in frontal_upper]
         raw.drop_channels(fp_present)
-        status(f"Dropped channels {fp_present}.")
+        # status(f"Dropped channels {fp_present}.")
 
         var_removed = (
             ica.get_explained_variance_ratio(raw_ica_fit, components=eog_iclabel_indices, ch_type="eeg")["eeg"]
@@ -270,10 +273,11 @@ for sub in subject_list:
         )
 
 
-        status("Saving stage-2 outputs (raw, JSON report, ICA solution, HTML report)...")
+
+        # status("Saving stage-2 outputs (raw, JSON report, ICA solution, HTML report)...")
         stage2_raw_path = out_dir / f"{sub}_stage2_cleaned_raw.fif"
         raw.save(stage2_raw_path, overwrite=True)
-        print(f"Saved: {stage2_raw_path}")
+        # print(f"Saved: {stage2_raw_path}")
 
         stage2_report = {
             "subject": sub,
@@ -290,14 +294,14 @@ for sub in subject_list:
         }
         with open(out_dir / f"{sub}_stage2_report.json", "w") as f:
             json.dump(stage2_report, f, indent=2)
-        print(f"Saved: {out_dir / f'{sub}_stage2_report.json'}")
+        # print(f"Saved: {out_dir / f'{sub}_stage2_report.json'}")
 
         ica.save(out_dir / f"{sub}_stage2_ica.fif", overwrite=True)
-        print(f"Saved: {out_dir / f'{sub}_stage2_ica.fif'}")
+        # print(f"Saved: {out_dir / f'{sub}_stage2_ica.fif'}")
 
         report_html_path = out_dir / f"{sub}_stage2_report.html"
         report.save(report_html_path, overwrite=True, open_browser=False)
-        print(f"Saved: {report_html_path}")
+        # print(f"Saved: {report_html_path}")
 
     except Exception as e:
                 print(f"Error occurred for {sub}: {e}")
