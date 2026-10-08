@@ -8,17 +8,45 @@ import matplotlib.pyplot as plt
 import time
 
 import mne
-from mne.preprocessing import ICA
+from mne.preprocessing import read_ica
 from mne_icalabel import label_components
 from pyprep import NoisyChannels
 
 def status(msg):
     print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
 
+def fix_curry_montage_flip(raw):
+    # Flip channel positions in X and Y (z preserved). Fiducials (nasion, LPA, RPA)
+    # are already oriented correctly, so they are left unchanged.
+    montage = raw.get_montage()
+    pos = montage.get_positions()
+
+    def flip(coord):
+        if coord is None:
+            return None
+        x, y, z = coord
+        return np.array([-x, -y, z])
+
+    new_ch_pos = {ch: flip(p) for ch, p in pos['ch_pos'].items()}
+
+    new_montage = mne.channels.make_dig_montage(
+        ch_pos = new_ch_pos,
+        nasion = pos['nasion'],   # unchanged — already correct
+        lpa = pos['lpa'],         # unchanged — already correct
+        rpa = pos['rpa'],         # unchanged — already correct
+        coord_frame = pos['coord_frame'],
+    )
+    raw.set_montage(new_montage)
+    return raw
+
 sub_errors = []
 
-subject_list = ['196', '202']
-
+subject_list = ["103", "104", "105", "106", "107", "108", "109", 
+                "110", "112", "113", "115", "119", "121", "122", 
+                "123", "124", "126", "129", "130", "131", "133", 
+                "134", "145", "147", "148", "152", "153", "155", 
+                "156", "157", "158", "159", "162", "174", "178", 
+                "179", "196", "202", "213"]
 # 139 ses, 154 stage 1 
 
 for sub in subject_list:
@@ -35,6 +63,17 @@ for sub in subject_list:
         events = np.load(out_dir / f"{sub}_stage1_events.npy")
         with open(out_dir / f"{sub}_stage1_event_id.json") as f:
             event_id = json.load(f)
+
+        # Fix Curry montage flip, plotting sensor positions before and after
+        fig_montage, axes = plt.subplots(1, 2, figsize=(14, 7))
+        raw.plot_sensors(kind="topomap", ch_type="eeg", show_names=True,
+                         axes=axes[0], show=False)
+        axes[0].set_title("Before flip")
+        raw = fix_curry_montage_flip(raw)
+        raw.plot_sensors(kind="topomap", ch_type="eeg", show_names=True,
+                         axes=axes[1], show=False)
+        axes[1].set_title("After flip (corrected function)")
+        plt.tight_layout()
 
         sfreq = raw.info["sfreq"]
         first_t = (events[0, 0] - raw.first_samp) / sfreq
@@ -58,6 +97,8 @@ for sub in subject_list:
         # status("Computing PSD before filtering (this can take a moment)...")
         report = mne.Report(title=f"Stage 2 Preprocessing — Subject {sub}")
         report.add_raw(raw, title="Stage 1 checkpoint (as loaded)", psd=False)
+        report.add_figure(fig_montage, title="Montage before/after X/Y flip fix")
+        plt.close(fig_montage)
 
         psd_prefilter = raw.compute_psd(
             method="welch", fmin=0.05, fmax=60, picks="eeg",
@@ -201,13 +242,15 @@ for sub in subject_list:
         )
 
 
-
-        # status("Fitting ICA (infomax, 20 components)...")
-        raw_ica_fit = raw.copy().filter(l_freq=1.0, h_freq=None, picks="eeg", fir_design="firwin")
-        ica = ICA(n_components=20, method="infomax", fit_params=dict(extended=True),
-                random_state=35, max_iter=800)
-        ica.fit(raw_ica_fit, picks="eeg")
-        print(f"ICA fit complete: {ica.n_components_} components")
+        # ICA is not refit: load the solution saved by the previous stage-2 run
+        # status("Loading saved ICA solution...")
+        ica = read_ica(out_dir / f"{sub}_stage2_ica.fif")
+        # ICA info carries the old (flipped) positions; use the corrected ones for plots
+        ica.info.set_montage(raw.get_montage(), on_missing="ignore")
+        report.add_html(
+            f"<p>Loaded {sub}_stage2_ica.fif ({ica.n_components_} components, not refit).</p>",
+            title="Saved ICA loaded",
+        )
 
 
         # status("Rendering ICA component topographies...")
@@ -263,7 +306,7 @@ for sub in subject_list:
         # status(f"Dropped channels {fp_present}.")
 
         var_removed = (
-            ica.get_explained_variance_ratio(raw_ica_fit, components=eog_iclabel_indices, ch_type="eeg")["eeg"]
+            ica.get_explained_variance_ratio(raw_iclabel, components=eog_iclabel_indices, ch_type="eeg")["eeg"]
             if eog_iclabel_indices else 0.0
         )
         report.add_html(
@@ -271,7 +314,6 @@ for sub in subject_list:
             f"<p>Variance explained by removed components: {var_removed:.1%}</p>",
             title="ICA applied",
         )
-
 
 
         # status("Saving stage-2 outputs (raw, JSON report, ICA solution, HTML report)...")
@@ -291,6 +333,8 @@ for sub in subject_list:
             "lowpass_hz": raw.info["lowpass"],
             "ica_eog_components_removed": list(map(int, eog_iclabel_indices)),
             "n_ica_components": ica.n_components_,
+            "montage_flip_fixed": True,
+            "ica_loaded_not_refit": True,
         }
         with open(out_dir / f"{sub}_stage2_report.json", "w") as f:
             json.dump(stage2_report, f, indent=2)
